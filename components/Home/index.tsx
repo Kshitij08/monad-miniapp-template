@@ -6,26 +6,29 @@ import { WalletActions } from "@/components/Home/WalletActions";
 import { useState } from "react";
 
 export default function Home() {
-  const handlePlayClick = () => {
-    window.open('/unity-game/index.html', '_blank', 'noopener,noreferrer');
-  };
+  const [showSettings, setShowSettings] = useState(false);
   return (
     <div className="flex min-h-screen flex-col items-center justify-center p-4 space-y-8">
-      {/* Play Button */}
+      {/* Settings Button */}
       <button
-        className="mb-4 px-6 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition"
-        onClick={handlePlayClick}
+        className="mb-4 px-6 py-2 bg-gray-700 text-white rounded hover:bg-gray-800 transition"
+        onClick={() => setShowSettings((prev) => !prev)}
       >
-        Play
+        {showSettings ? "Hide Settings" : "Settings"}
       </button>
-      <h1 className="text-3xl font-bold text-center">
-        Monad Farcaster MiniApp Template
-      </h1>
-      <div className="w-full max-w-4xl space-y-6">
-        <User />
-        <FarcasterActions />
-        <WalletActions />
-      </div>
+      {/* Settings Content */}
+      {showSettings && (
+        <>
+          <h1 className="text-3xl font-bold text-center">
+            Monad Farcaster MiniApp Template
+          </h1>
+          <div className="w-full max-w-4xl space-y-6">
+            <User />
+            <FarcasterActions />
+            <WalletActions />
+          </div>
+        </>
+      )}
     </div>
   );
 }
