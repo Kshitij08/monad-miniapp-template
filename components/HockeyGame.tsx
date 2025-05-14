@@ -4,6 +4,12 @@ const PUCK_RADIUS = 10;
 const FRICTION = 0.9; // Doubled friction (closer to 1 = less friction, closer to 0 = more friction)
 const WALL_BOUNCE = 0.9;
 const VELOCITY_THRESHOLD = 0.15; // Lowered threshold - puck will stop only when movement is imperceptible
+const BORDER_WIDTH = 30; // Width of the side borders
+const BORDER_COLOR = "#4a2506"; // Dark brown color for wooden borders
+const TABLE_COLOR = "#1e293b"; // Existing table color
+const HOLE_RADIUS = 30;
+const SINK_ANIMATION_DURATION = 500; // milliseconds
+const HOLE_VERTICAL_SPACING = 300; // Space between holes vertically
 
 function distance(x1: number, y1: number, x2: number, y2: number) {
   return Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2);
@@ -38,15 +44,91 @@ function drawArrow(ctx: CanvasRenderingContext2D, fromX: number, fromY: number, 
   ctx.fill();
 }
 
+interface Hole {
+  x: number;
+  y: number;
+}
+
 export default function HockeyGame() {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [canvasSize, setCanvasSize] = useState({ width: window.innerWidth, height: window.innerHeight });
   const [puck, setPuck] = useState({ x: window.innerWidth / 2, y: window.innerHeight / 2, vx: 0, vy: 0 });
+  const [puckScale, setPuckScale] = useState(1); // New state for puck scaling animation
   const [dragging, setDragging] = useState(false);
   const [dragStart, setDragStart] = useState<{ x: number; y: number } | null>(null);
   const [dragEnd, setDragEnd] = useState<{ x: number; y: number } | null>(null);
   const [isMoving, setIsMoving] = useState(false);
+  const [isSinking, setIsSinking] = useState(false); // New state for sinking animation
+  const [viewOffset, setViewOffset] = useState(0); // Track vertical scroll position
+  const [holes, setHoles] = useState<Hole[]>([]); // Dynamic holes array
+
+  // Generate holes for a given vertical range
+  const generateHolesForRange = (startY: number, endY: number) => {
+    const newHoles: Hole[] = [];
+    const startSection = Math.floor(startY / HOLE_VERTICAL_SPACING);
+    const endSection = Math.ceil(endY / HOLE_VERTICAL_SPACING);
+
+    for (let i = startSection; i <= endSection; i++) {
+      const y = i * HOLE_VERTICAL_SPACING;
+      newHoles.push(
+        { x: BORDER_WIDTH, y }, // Left hole
+        { x: canvasSize.width - BORDER_WIDTH, y } // Right hole
+      );
+    }
+    return newHoles;
+  };
+
+  // Update holes when view changes
+  useEffect(() => {
+    const visibleStart = viewOffset - canvasSize.height;
+    const visibleEnd = viewOffset + canvasSize.height * 2;
+    setHoles(generateHolesForRange(visibleStart, visibleEnd));
+  }, [viewOffset, canvasSize.height]);
+
+  // Function to check if puck is in a hole
+  const checkHoleCollision = () => {
+    return holes.some(hole => {
+      const isOnCorrectSide = hole.x < canvasSize.width / 2 ? 
+        puck.x > hole.x : 
+        puck.x < hole.x;
+
+      const dist = distance(puck.x, puck.y + viewOffset, hole.x, hole.y);
+      return dist < HOLE_RADIUS && isOnCorrectSide;
+    });
+  };
+
+  // Function to reset puck to center
+  const resetPuck = () => {
+    setPuck({
+      x: canvasSize.width / 2,
+      y: canvasSize.height / 2,
+      vx: 0,
+      vy: 0
+    });
+    setPuckScale(1);
+    setIsSinking(false);
+    setIsMoving(false);
+  };
+
+  // Handle puck sinking animation
+  useEffect(() => {
+    if (isSinking) {
+      let startTime = Date.now();
+      const animate = () => {
+        const elapsed = Date.now() - startTime;
+        const progress = Math.min(elapsed / SINK_ANIMATION_DURATION, 1);
+        setPuckScale(1 - progress);
+        
+        if (progress < 1) {
+          requestAnimationFrame(animate);
+        } else {
+          resetPuck();
+        }
+      };
+      requestAnimationFrame(animate);
+    }
+  }, [isSinking]);
 
   // Responsive canvas
   useEffect(() => {
@@ -62,40 +144,9 @@ export default function HockeyGame() {
     return () => window.removeEventListener("resize", handleResize);
   }, []);
 
-  // Draw everything
-  useEffect(() => {
-    const ctx = canvasRef.current?.getContext("2d");
-    if (!ctx) return;
-    ctx.clearRect(0, 0, canvasSize.width, canvasSize.height);
-
-    // Draw table
-    ctx.fillStyle = "#1e293b";
-    ctx.fillRect(0, 0, canvasSize.width, canvasSize.height);
-
-    // Draw puck
-    ctx.beginPath();
-    ctx.arc(puck.x, puck.y, PUCK_RADIUS, 0, Math.PI * 2);
-    ctx.fillStyle = "#fbbf24";
-    ctx.fill();
-    ctx.strokeStyle = "#fff";
-    ctx.lineWidth = 2;
-    ctx.stroke();
-
-    // Draw drag arrow
-    if (dragging && dragStart && dragEnd) {
-      const dx = dragStart.x - dragEnd.x;
-      const dy = dragStart.y - dragEnd.y;
-      // Scale the arrow length based on drag distance
-      const dragDistance = Math.sqrt(dx * dx + dy * dy);
-      const maxLength = 150; // Maximum arrow length
-      const scale = Math.min(1, maxLength / (dragDistance || 1));
-      drawArrow(ctx, puck.x, puck.y, dx * scale, dy * scale);
-    }
-  }, [puck, dragging, dragStart, dragEnd, canvasSize]);
-
   // Physics loop
   useEffect(() => {
-    if (dragging || !isMoving) return;
+    if (dragging || !isMoving || isSinking) return;
     
     let animation: number;
     const step = () => {
@@ -105,27 +156,36 @@ export default function HockeyGame() {
       vx *= FRICTION;
       vy *= FRICTION;
 
-      // Wall collision
-      if (x - PUCK_RADIUS < 0) {
-        x = PUCK_RADIUS;
+      // Update view offset when puck moves vertically
+      if (y > canvasSize.height * 0.7) {
+        const diff = y - canvasSize.height * 0.7;
+        y -= diff;
+        setViewOffset(prev => prev + diff);
+      } else if (y < canvasSize.height * 0.3) {
+        const diff = canvasSize.height * 0.3 - y;
+        y += diff;
+        setViewOffset(prev => prev - diff);
+      }
+
+      // Horizontal wall collision
+      if (x - PUCK_RADIUS < BORDER_WIDTH) {
+        x = BORDER_WIDTH + PUCK_RADIUS;
         vx = -vx * WALL_BOUNCE;
       }
-      if (x + PUCK_RADIUS > canvasSize.width) {
-        x = canvasSize.width - PUCK_RADIUS;
+      if (x + PUCK_RADIUS > canvasSize.width - BORDER_WIDTH) {
+        x = canvasSize.width - BORDER_WIDTH - PUCK_RADIUS;
         vx = -vx * WALL_BOUNCE;
       }
-      if (y - PUCK_RADIUS < 0) {
-        y = PUCK_RADIUS;
-        vy = -vy * WALL_BOUNCE;
-      }
-      if (y + PUCK_RADIUS > canvasSize.height) {
-        y = canvasSize.height - PUCK_RADIUS;
-        vy = -vy * WALL_BOUNCE;
+
+      // Check for hole collision
+      if (checkHoleCollision()) {
+        setIsSinking(true);
+        return;
       }
 
       // Check if puck has slowed enough to stop
       if (Math.abs(vx) < VELOCITY_THRESHOLD && Math.abs(vy) < VELOCITY_THRESHOLD) {
-        setPuck({ x, y, vx: 0, vy: 0 }); // Stop completely
+        setPuck({ x, y, vx: 0, vy: 0 });
         setIsMoving(false);
         return;
       }
@@ -136,7 +196,85 @@ export default function HockeyGame() {
     
     animation = requestAnimationFrame(step);
     return () => cancelAnimationFrame(animation);
-  }, [dragging, isMoving, puck, canvasSize]);
+  }, [dragging, isMoving, puck, canvasSize, isSinking, viewOffset]);
+
+  // Draw everything
+  useEffect(() => {
+    const ctx = canvasRef.current?.getContext("2d");
+    if (!ctx) return;
+    ctx.clearRect(0, 0, canvasSize.width, canvasSize.height);
+
+    // Draw table background
+    ctx.fillStyle = TABLE_COLOR;
+    ctx.fillRect(0, 0, canvasSize.width, canvasSize.height);
+
+    // Draw borders (only sides now)
+    ctx.fillStyle = BORDER_COLOR;
+    ctx.fillRect(0, 0, BORDER_WIDTH, canvasSize.height); // Left border
+    ctx.fillRect(canvasSize.width - BORDER_WIDTH, 0, BORDER_WIDTH, canvasSize.height); // Right border
+
+    // Add cushion highlights (only for side borders)
+    const gradient = ctx.createLinearGradient(0, 0, BORDER_WIDTH, 0);
+    gradient.addColorStop(0, "#3d1e05");
+    gradient.addColorStop(1, "#5c2e07");
+    
+    // Left cushion highlight
+    ctx.fillStyle = gradient;
+    ctx.fillRect(BORDER_WIDTH - 5, 0, 5, canvasSize.height);
+    
+    // Right cushion highlight
+    const gradientRight = ctx.createLinearGradient(canvasSize.width - BORDER_WIDTH, 0, canvasSize.width, 0);
+    gradientRight.addColorStop(0, "#5c2e07");
+    gradientRight.addColorStop(1, "#3d1e05");
+    ctx.fillStyle = gradientRight;
+    ctx.fillRect(canvasSize.width - BORDER_WIDTH, 0, 5, canvasSize.height);
+
+    // Draw holes
+    holes.forEach(hole => {
+      const adjustedY = hole.y - viewOffset;
+      
+      // Only draw holes that are visible
+      if (adjustedY > -HOLE_RADIUS && adjustedY < canvasSize.height + HOLE_RADIUS) {
+        ctx.beginPath();
+        const startAngle = hole.x < canvasSize.width / 2 ? -Math.PI/2 : Math.PI/2;
+        ctx.arc(hole.x, adjustedY, HOLE_RADIUS, startAngle, startAngle + Math.PI);
+        ctx.fillStyle = "#000000";
+        ctx.fill();
+        
+        const holeGradient = ctx.createRadialGradient(
+          hole.x, adjustedY, 0,
+          hole.x, adjustedY, HOLE_RADIUS
+        );
+        holeGradient.addColorStop(0, "rgba(0, 0, 0, 0.8)");
+        holeGradient.addColorStop(1, "rgba(0, 0, 0, 1)");
+        ctx.fillStyle = holeGradient;
+        ctx.fill();
+
+        ctx.strokeStyle = "#1a1a1a";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
+    });
+
+    // Draw puck
+    ctx.beginPath();
+    ctx.arc(puck.x, puck.y, PUCK_RADIUS * puckScale, 0, Math.PI * 2);
+    ctx.fillStyle = "#fbbf24";
+    ctx.fill();
+    ctx.strokeStyle = "#fff";
+    ctx.lineWidth = 2 * puckScale;
+    ctx.stroke();
+
+    // Draw drag arrow
+    if (dragging && dragStart && dragEnd) {
+      const dx = dragStart.x - dragEnd.x;
+      const dy = dragStart.y - dragEnd.y;
+      const dragDistance = Math.sqrt(dx * dx + dy * dy);
+      const maxLength = 150;
+      const scale = Math.min(1, maxLength / (dragDistance || 1));
+      drawArrow(ctx, puck.x, puck.y, dx * scale, dy * scale);
+    }
+  }, [puck, dragging, dragStart, dragEnd, canvasSize, puckScale, viewOffset, holes]);
 
   // Mouse/touch handlers
   const getPointerPos = (e: React.PointerEvent) => {
