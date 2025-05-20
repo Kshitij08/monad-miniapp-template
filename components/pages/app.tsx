@@ -1,6 +1,9 @@
+"use client";
+
 import { SafeAreaContainer } from "@/components/safe-area-container";
 import { useMiniAppContext } from "@/hooks/use-miniapp-context";
 import dynamic from "next/dynamic";
+import { FrameProvider } from "@/components/farcaster-provider";
 
 const Demo = dynamic(() => import("@/components/Home"), {
   ssr: false,
@@ -10,8 +13,10 @@ const Demo = dynamic(() => import("@/components/Home"), {
 export default function Home() {
   const { context } = useMiniAppContext();
   return (
-    <SafeAreaContainer insets={context?.client.safeAreaInsets}>
-      <Demo />
-    </SafeAreaContainer>
+    <FrameProvider>
+      <SafeAreaContainer insets={context?.client.safeAreaInsets}>
+        <Demo />
+      </SafeAreaContainer>
+    </FrameProvider>
   );
 }
