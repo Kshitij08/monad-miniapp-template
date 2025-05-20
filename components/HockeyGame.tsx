@@ -1,15 +1,20 @@
 import React, { useRef, useEffect, useState } from "react";
 
 const PUCK_RADIUS = 10;
-const FRICTION = 0.9; // Doubled friction (closer to 1 = less friction, closer to 0 = more friction)
+const FRICTION = 0.925; // Doubled friction (closer to 1 = less friction, closer to 0 = more friction)
 const WALL_BOUNCE = 0.9;
-const VELOCITY_THRESHOLD = 0.15; // Lowered threshold - puck will stop only when movement is imperceptible
+const VELOCITY_THRESHOLD = 0.2; // Lowered threshold - puck will stop only when movement is imperceptible
 const BORDER_WIDTH = 30; // Width of the side borders
 const BORDER_COLOR = "#4a2506"; // Dark brown color for wooden borders
 const TABLE_COLOR = "#1e293b"; // Existing table color
 const HOLE_RADIUS = 30;
 const SINK_ANIMATION_DURATION = 500; // milliseconds
 const HOLE_VERTICAL_SPACING = 300; // Space between holes vertically
+const TARGET_RADIUS = 15;
+const DISK_BOUNCE = 0.95; // Slightly more bouncy than walls
+const TARGETS_PER_SECTION = 3; // Number of targets to spawn per section
+const DEBUG_MODE = true; // Add this to toggle collision boundary visualization
+const COLLISION_MULTIPLIER = 1.2;
 
 function distance(x1: number, y1: number, x2: number, y2: number) {
   return Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2);
@@ -49,6 +54,16 @@ interface Hole {
   y: number;
 }
 
+interface Target {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  type: 'blue' | 'red';
+  scale: number;
+  isVisible: boolean;
+}
+
 export default function HockeyGame() {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -62,29 +77,49 @@ export default function HockeyGame() {
   const [isSinking, setIsSinking] = useState(false); // New state for sinking animation
   const [viewOffset, setViewOffset] = useState(0); // Track vertical scroll position
   const [holes, setHoles] = useState<Hole[]>([]); // Dynamic holes array
+  const [targets, setTargets] = useState<Target[]>([]);
+  const [score, setScore] = useState(0);
 
-  // Generate holes for a given vertical range
-  const generateHolesForRange = (startY: number, endY: number) => {
-    const newHoles: Hole[] = [];
-    const startSection = Math.floor(startY / HOLE_VERTICAL_SPACING);
-    const endSection = Math.ceil(endY / HOLE_VERTICAL_SPACING);
-
-    for (let i = startSection; i <= endSection; i++) {
-      const y = i * HOLE_VERTICAL_SPACING;
-      newHoles.push(
-        { x: BORDER_WIDTH, y }, // Left hole
-        { x: canvasSize.width - BORDER_WIDTH, y } // Right hole
-      );
+  // Generate random targets for a section
+  const generateTargetsForSection = (sectionY: number) => {
+    const newTargets: Target[] = [];
+    for (let i = 0; i < TARGETS_PER_SECTION; i++) {
+      const x = BORDER_WIDTH + TARGET_RADIUS + Math.random() * (canvasSize.width - 2 * (BORDER_WIDTH + TARGET_RADIUS));
+      const y = sectionY + Math.random() * HOLE_VERTICAL_SPACING;
+      newTargets.push({
+        x,
+        y,
+        vx: 0,
+        vy: 0,
+        type: Math.random() > 0.7 ? 'red' : 'blue', // 30% chance for red targets
+        scale: 1,
+        isVisible: true
+      });
     }
-    return newHoles;
+    return newTargets;
   };
 
-  // Update holes when view changes
+  // Generate holes and targets for the fixed table
   useEffect(() => {
-    const visibleStart = viewOffset - canvasSize.height;
-    const visibleEnd = viewOffset + canvasSize.height * 2;
-    setHoles(generateHolesForRange(visibleStart, visibleEnd));
-  }, [viewOffset, canvasSize.height]);
+    // Fixed holes at regular intervals
+    const newHoles: Hole[] = [];
+    const newTargets: Target[] = [];
+    const sections = Math.floor(canvasSize.height / HOLE_VERTICAL_SPACING);
+    
+    for (let i = 0; i <= sections; i++) {
+      const y = (i + 0.5) * HOLE_VERTICAL_SPACING; // Center holes in each section
+      if (y < canvasSize.height - HOLE_RADIUS) { // Only add if fully visible
+        newHoles.push(
+          { x: BORDER_WIDTH, y },
+          { x: canvasSize.width - BORDER_WIDTH, y }
+        );
+        newTargets.push(...generateTargetsForSection(y));
+      }
+    }
+    
+    setHoles(newHoles);
+    setTargets(newTargets);
+  }, [canvasSize.height]);
 
   // Function to check if puck is in a hole
   const checkHoleCollision = () => {
@@ -94,6 +129,69 @@ export default function HockeyGame() {
         puck.x < hole.x;
 
       const dist = distance(puck.x, puck.y + viewOffset, hole.x, hole.y);
+      return dist < HOLE_RADIUS && isOnCorrectSide;
+    });
+  };
+
+  // Check collisions between puck and targets
+  const handleTargetCollisions = (puckX: number, puckY: number, puckVx: number, puckVy: number) => {
+    let finalPuckVx = puckVx;
+    let finalPuckVy = puckVy;
+    let hasCollision = false;
+
+    setTargets(prev => prev.map(target => {
+      if (!target.isVisible) return target;
+
+      const dx = target.x - puckX;
+      const dy = target.y - puckY;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+      const minDistance = (PUCK_RADIUS + TARGET_RADIUS) * COLLISION_MULTIPLIER;
+
+      if (distance < minDistance) {
+        hasCollision = true;
+
+        // Normalize the collision vector
+        const nx = dx / distance;
+        const ny = dy / distance;
+
+        // Get the puck's incoming velocity magnitude
+        const speed = Math.sqrt(finalPuckVx * finalPuckVx + finalPuckVy * finalPuckVy);
+
+        // Target moves in the direction of impact (opposite to the bounce)
+        const newTargetVx = -finalPuckVx * DISK_BOUNCE;
+        const newTargetVy = -finalPuckVy * DISK_BOUNCE;
+
+        // Puck bounces back
+        finalPuckVx = finalPuckVx * WALL_BOUNCE;
+        finalPuckVy = finalPuckVy * WALL_BOUNCE;
+
+        // Move objects apart to prevent sticking
+        const overlap = minDistance - distance;
+        const pushX = nx * overlap / 2;
+        const pushY = ny * overlap / 2;
+
+        return {
+          ...target,
+          x: target.x + pushX,
+          y: target.y + pushY,
+          vx: newTargetVx,
+          vy: newTargetVy
+        };
+      }
+      return target;
+    }));
+
+    return { vx: finalPuckVx, vy: finalPuckVy, hasCollision };
+  };
+
+  // Check if target is in a hole
+  const checkTargetHoleCollision = (target: Target) => {
+    return holes.some(hole => {
+      const isOnCorrectSide = hole.x < canvasSize.width / 2 ? 
+        target.x > hole.x : 
+        target.x < hole.x;
+
+      const dist = distance(target.x, target.y, hole.x, hole.y);
       return dist < HOLE_RADIUS && isOnCorrectSide;
     });
   };
@@ -146,28 +244,40 @@ export default function HockeyGame() {
 
   // Physics loop
   useEffect(() => {
-    if (dragging || !isMoving || isSinking) return;
+    if (dragging || (!isMoving && !targets.some(t => Math.abs(t.vx) > 0.1 || Math.abs(t.vy) > 0.1))) return;
     
     let animation: number;
     const step = () => {
       let { x, y, vx, vy } = puck;
+      
+      // Store previous position for collision resolution
+      const prevX = x;
+      const prevY = y;
+
+      // Update puck position
       x += vx;
       y += vy;
+
+      // Handle collisions with targets
+      const newVelocities = handleTargetCollisions(x, y, vx, vy);
+      
+      // If collision occurred, adjust position and velocity
+      if (newVelocities.hasCollision) {
+        // Move back slightly from collision point
+        x = prevX + (x - prevX) * 0.5;
+        y = prevY + (y - prevY) * 0.5;
+        vx = newVelocities.vx * DISK_BOUNCE;
+        vy = newVelocities.vy * DISK_BOUNCE;
+      } else {
+        vx = newVelocities.vx;
+        vy = newVelocities.vy;
+      }
+
+      // Apply friction after collision
       vx *= FRICTION;
       vy *= FRICTION;
 
-      // Update view offset when puck moves vertically
-      if (y > canvasSize.height * 0.7) {
-        const diff = y - canvasSize.height * 0.7;
-        y -= diff;
-        setViewOffset(prev => prev + diff);
-      } else if (y < canvasSize.height * 0.3) {
-        const diff = canvasSize.height * 0.3 - y;
-        y += diff;
-        setViewOffset(prev => prev - diff);
-      }
-
-      // Horizontal wall collision
+      // Wall collisions for puck
       if (x - PUCK_RADIUS < BORDER_WIDTH) {
         x = BORDER_WIDTH + PUCK_RADIUS;
         vx = -vx * WALL_BOUNCE;
@@ -176,6 +286,59 @@ export default function HockeyGame() {
         x = canvasSize.width - BORDER_WIDTH - PUCK_RADIUS;
         vx = -vx * WALL_BOUNCE;
       }
+      if (y - PUCK_RADIUS < 0) {
+        y = PUCK_RADIUS;
+        vy = -vy * WALL_BOUNCE;
+      }
+      if (y + PUCK_RADIUS > canvasSize.height) {
+        y = canvasSize.height - PUCK_RADIUS;
+        vy = -vy * WALL_BOUNCE;
+      }
+
+      // Update targets with continuous collision detection
+      setTargets(prev => prev.map(target => {
+        if (!target.isVisible) return target;
+
+        let { x: tx, y: ty, vx: tvx, vy: tvy } = target;
+        
+        // Store previous position
+        const prevTx = tx;
+        const prevTy = ty;
+        
+        // Update position
+        tx += tvx;
+        ty += tvy;
+
+        // Wall collisions for targets
+        if (tx - TARGET_RADIUS < BORDER_WIDTH) {
+          tx = BORDER_WIDTH + TARGET_RADIUS;
+          tvx = -tvx * WALL_BOUNCE;
+        }
+        if (tx + TARGET_RADIUS > canvasSize.width - BORDER_WIDTH) {
+          tx = canvasSize.width - BORDER_WIDTH - TARGET_RADIUS;
+          tvx = -tvx * WALL_BOUNCE;
+        }
+        if (ty - TARGET_RADIUS < 0) {
+          ty = TARGET_RADIUS;
+          tvy = -tvy * WALL_BOUNCE;
+        }
+        if (ty + TARGET_RADIUS > canvasSize.height) {
+          ty = canvasSize.height - TARGET_RADIUS;
+          tvy = -tvy * WALL_BOUNCE;
+        }
+
+        // Apply friction after movement and collisions
+        tvx *= FRICTION;
+        tvy *= FRICTION;
+
+        // Check if target fell in hole
+        if (checkTargetHoleCollision(target)) {
+          setScore(s => s + (target.type === 'red' ? 25 : 10));
+          return { ...target, isVisible: false };
+        }
+
+        return { ...target, x: tx, y: ty, vx: tvx, vy: tvy };
+      }));
 
       // Check for hole collision
       if (checkHoleCollision()) {
@@ -183,7 +346,7 @@ export default function HockeyGame() {
         return;
       }
 
-      // Check if puck has slowed enough to stop
+      // Check if everything has stopped moving
       if (Math.abs(vx) < VELOCITY_THRESHOLD && Math.abs(vy) < VELOCITY_THRESHOLD) {
         setPuck({ x, y, vx: 0, vy: 0 });
         setIsMoving(false);
@@ -196,7 +359,7 @@ export default function HockeyGame() {
     
     animation = requestAnimationFrame(step);
     return () => cancelAnimationFrame(animation);
-  }, [dragging, isMoving, puck, canvasSize, isSinking, viewOffset]);
+  }, [dragging, isMoving, puck, canvasSize, isSinking, targets]);
 
   // Draw everything
   useEffect(() => {
@@ -208,21 +371,19 @@ export default function HockeyGame() {
     ctx.fillStyle = TABLE_COLOR;
     ctx.fillRect(0, 0, canvasSize.width, canvasSize.height);
 
-    // Draw borders (only sides now)
+    // Draw borders
     ctx.fillStyle = BORDER_COLOR;
     ctx.fillRect(0, 0, BORDER_WIDTH, canvasSize.height); // Left border
     ctx.fillRect(canvasSize.width - BORDER_WIDTH, 0, BORDER_WIDTH, canvasSize.height); // Right border
 
-    // Add cushion highlights (only for side borders)
+    // Add cushion highlights
     const gradient = ctx.createLinearGradient(0, 0, BORDER_WIDTH, 0);
     gradient.addColorStop(0, "#3d1e05");
     gradient.addColorStop(1, "#5c2e07");
     
-    // Left cushion highlight
     ctx.fillStyle = gradient;
     ctx.fillRect(BORDER_WIDTH - 5, 0, 5, canvasSize.height);
     
-    // Right cushion highlight
     const gradientRight = ctx.createLinearGradient(canvasSize.width - BORDER_WIDTH, 0, canvasSize.width, 0);
     gradientRight.addColorStop(0, "#5c2e07");
     gradientRight.addColorStop(1, "#3d1e05");
@@ -231,27 +392,59 @@ export default function HockeyGame() {
 
     // Draw holes
     holes.forEach(hole => {
-      const adjustedY = hole.y - viewOffset;
+      ctx.beginPath();
+      const startAngle = hole.x < canvasSize.width / 2 ? -Math.PI/2 : Math.PI/2;
+      ctx.arc(hole.x, hole.y, HOLE_RADIUS, startAngle, startAngle + Math.PI);
+      ctx.fillStyle = "#000000";
+      ctx.fill();
       
-      // Only draw holes that are visible
-      if (adjustedY > -HOLE_RADIUS && adjustedY < canvasSize.height + HOLE_RADIUS) {
-        ctx.beginPath();
-        const startAngle = hole.x < canvasSize.width / 2 ? -Math.PI/2 : Math.PI/2;
-        ctx.arc(hole.x, adjustedY, HOLE_RADIUS, startAngle, startAngle + Math.PI);
-        ctx.fillStyle = "#000000";
-        ctx.fill();
-        
-        const holeGradient = ctx.createRadialGradient(
-          hole.x, adjustedY, 0,
-          hole.x, adjustedY, HOLE_RADIUS
-        );
-        holeGradient.addColorStop(0, "rgba(0, 0, 0, 0.8)");
-        holeGradient.addColorStop(1, "rgba(0, 0, 0, 1)");
-        ctx.fillStyle = holeGradient;
-        ctx.fill();
+      const holeGradient = ctx.createRadialGradient(
+        hole.x, hole.y, 0,
+        hole.x, hole.y, HOLE_RADIUS
+      );
+      holeGradient.addColorStop(0, "rgba(0, 0, 0, 0.8)");
+      holeGradient.addColorStop(1, "rgba(0, 0, 0, 1)");
+      ctx.fillStyle = holeGradient;
+      ctx.fill();
 
-        ctx.strokeStyle = "#1a1a1a";
-        ctx.lineWidth = 2;
+      ctx.strokeStyle = "#1a1a1a";
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    });
+
+    // Draw targets
+    targets.forEach(target => {
+      if (!target.isVisible) return;
+      
+      // Draw target disk
+      ctx.beginPath();
+      ctx.arc(target.x, target.y, TARGET_RADIUS, 0, Math.PI * 2);
+      ctx.fillStyle = target.type === 'red' ? '#ef4444' : '#3b82f6';
+      ctx.fill();
+      
+      // Draw stripes
+      ctx.save();
+      ctx.clip();
+      for (let i = -TARGET_RADIUS; i <= TARGET_RADIUS; i += 8) {
+        ctx.beginPath();
+        ctx.moveTo(target.x - TARGET_RADIUS, target.y + i);
+        ctx.lineTo(target.x + TARGET_RADIUS, target.y + i);
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 3;
+        ctx.stroke();
+      }
+      ctx.restore();
+      
+      ctx.strokeStyle = target.type === 'red' ? '#b91c1c' : '#1d4ed8';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      // Draw collision boundary if debug mode is on
+      if (DEBUG_MODE) {
+        ctx.beginPath();
+        ctx.arc(target.x, target.y, TARGET_RADIUS * 1.2, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(255, 255, 0, 0.3)';
+        ctx.lineWidth = 1;
         ctx.stroke();
       }
     });
@@ -265,6 +458,21 @@ export default function HockeyGame() {
     ctx.lineWidth = 2 * puckScale;
     ctx.stroke();
 
+    // Draw puck collision boundary if debug mode is on
+    if (DEBUG_MODE) {
+      ctx.beginPath();
+      ctx.arc(puck.x, puck.y, PUCK_RADIUS * 1.2, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(255, 255, 0, 0.3)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+
+    // Draw score
+    ctx.font = "bold 24px Arial";
+    ctx.fillStyle = "#ffffff";
+    ctx.textAlign = "right";
+    ctx.fillText(`Score: ${score}`, canvasSize.width - 40, 40);
+
     // Draw drag arrow
     if (dragging && dragStart && dragEnd) {
       const dx = dragStart.x - dragEnd.x;
@@ -274,7 +482,7 @@ export default function HockeyGame() {
       const scale = Math.min(1, maxLength / (dragDistance || 1));
       drawArrow(ctx, puck.x, puck.y, dx * scale, dy * scale);
     }
-  }, [puck, dragging, dragStart, dragEnd, canvasSize, puckScale, viewOffset, holes]);
+  }, [puck, dragging, dragStart, dragEnd, canvasSize, puckScale, holes, targets, score]);
 
   // Mouse/touch handlers
   const getPointerPos = (e: React.PointerEvent) => {
